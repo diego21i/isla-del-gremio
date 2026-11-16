@@ -1,0 +1,755 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Visor Oficial de la Isla del Gremio — D&D</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- Google Fonts: Cinzel & Inter -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        fantasy: ['Cinzel', 'serif'],
+                        sans: ['Inter', 'sans-serif'],
+                    },
+                    colors: {
+                        obsidian: '#090b10',
+                        slateDark: '#121620',
+                        gold: {
+                            300: '#fcd34d',
+                            400: '#fbbf24',
+                            500: '#d97706',
+                            600: '#b45309',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        html, body {
+            width: 100vw;
+            height: 100vh;
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #090b10;
+            color: #f1f5f9;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+
+        /* Lienzo interactivo Pan & Zoom */
+        #mapViewport {
+            width: 100vw;
+            height: 100vh;
+            cursor: grab;
+            touch-action: none;
+        }
+        #mapViewport:active {
+            cursor: grabbing;
+        }
+        #mapTransformLayer {
+            transform-origin: center center;
+            will-change: transform;
+        }
+
+        /* Transición suave al cambiar de habitación */
+        .room-fade-in {
+            animation: roomFade 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        @keyframes roomFade {
+            from { opacity: 0.25; filter: blur(4px); }
+            to { opacity: 1; filter: blur(0); }
+        }
+
+        /* Botones direccionales */
+        .compass-nav-btn {
+            transition: all 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        .compass-nav-btn:hover {
+            transform: scale(1.06);
+            box-shadow: 0 0 24px rgba(251, 191, 36, 0.4);
+        }
+        .compass-nav-btn:active {
+            transform: scale(0.95);
+        }
+
+        /* Scrollbar sutil para descripción en pantallas pequeñas */
+        .custom-scroll::-webkit-scrollbar {
+            width: 5px;
+            height: 5px;
+        }
+        .custom-scroll::-webkit-scrollbar-track {
+            background: rgba(15, 23, 42, 0.4);
+        }
+        .custom-scroll::-webkit-scrollbar-thumb {
+            background: rgba(217, 119, 6, 0.5);
+            border-radius: 9999px;
+        }
+    </style>
+</head>
+<body class="relative font-sans antialiased">
+
+    <!-- 1. LIENZO DE MAPA A PANTALLA COMPLETA (PAN & ZOOM) -->
+    <div id="mapViewport" class="relative flex items-center justify-center bg-obsidian overflow-hidden">
+        <!-- Patrón sutil de cuadrícula de fondo -->
+        <div class="absolute inset-0 opacity-15 pointer-events-none"
+             style="background-image: radial-gradient(#fbbf24 1px, transparent 1px); background-size: 32px 32px;">
+        </div>
+
+        <!-- Capa transformable por arrastre y rueda del ratón -->
+        <div id="mapTransformLayer" class="relative flex items-center justify-center">
+            <img id="roomImage" src="" alt="Mapa de la ubicación"
+                 draggable="false"
+                 class="max-w-[92vw] max-h-[82vh] w-auto h-auto object-contain rounded-xl shadow-[0_0_60px_rgba(0,0,0,0.9)] border border-amber-500/25 pointer-events-none"
+                 onerror="handleImageError()">
+        </div>
+
+        <!-- Viñeta ambiental en bordes -->
+        <div class="absolute inset-0 pointer-events-none bg-[radial-gradient(circle_at_center,transparent_55%,rgba(9,11,16,0.75)_100%)]"></div>
+    </div>
+
+    <!-- 2. BARRA SUPERIOR IZQUIERDA: IDENTIDAD Y ESTADO DE SINCRONIZACIÓN (SOLO LECTURA) -->
+    <header class="fixed top-4 left-4 z-30 flex flex-col sm:flex-row items-start sm:items-center gap-2.5 pointer-events-none">
+        <div class="pointer-events-auto flex items-center gap-3 bg-slate-950/75 backdrop-blur-md border border-amber-500/30 px-4 py-2.5 rounded-2xl shadow-2xl">
+            <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-amber-400 to-amber-600 flex items-center justify-center text-slate-950 shadow-inner shrink-0">
+                <i data-lucide="compass" class="w-5 h-5 stroke-[2.4]"></i>
+            </div>
+            <div>
+                <h1 class="font-fantasy text-sm sm:text-base font-bold text-amber-300 tracking-wider leading-none">
+                    Isla del Gremio
+                </h1>
+                <div class="flex items-center gap-2 mt-1">
+                    <span id="statusDot" class="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span>
+                    <span id="syncStatusText" class="text-[11px] text-slate-300 font-medium">
+                        Cargando ./gremio.json...
+                    </span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Controles discretos de Zoom y Centrado -->
+        <div class="pointer-events-auto flex items-center gap-1 bg-slate-950/75 backdrop-blur-md border border-slate-700/70 p-1 rounded-xl shadow-xl">
+            <button onclick="adjustZoom(0.25)" title="Acercar (Rueda arriba)"
+                    class="p-2 rounded-lg text-slate-300 hover:text-amber-300 hover:bg-slate-800/80 transition">
+                <i data-lucide="zoom-in" class="w-4 h-4"></i>
+            </button>
+            <button onclick="adjustZoom(-0.25)" title="Alejar (Rueda abajo)"
+                    class="p-2 rounded-lg text-slate-300 hover:text-amber-300 hover:bg-slate-800/80 transition">
+                <i data-lucide="zoom-out" class="w-4 h-4"></i>
+            </button>
+            <div class="w-px h-4 bg-slate-700 mx-0.5"></div>
+            <button onclick="resetViewTransform()" title="Centrar y restablecer vista (Doble clic)"
+                    class="px-2.5 py-1.5 rounded-lg text-xs font-medium text-slate-300 hover:text-amber-300 hover:bg-slate-800/80 transition flex items-center gap-1.5">
+                <i data-lucide="maximize-2" class="w-3.5 h-3.5"></i>
+                <span id="zoomLevelLabel" class="font-mono text-[11px]">100%</span>
+            </button>
+        </div>
+    </header>
+
+    <!-- 3. MINIMAPA FLOTANTE SEMITRANSPARENTE (ESQUINA SUPERIOR DERECHA) -->
+    <aside class="fixed top-4 right-4 z-30 w-52 sm:w-64 bg-slate-950/65 hover:bg-slate-950/85 backdrop-blur-md border border-amber-500/30 rounded-2xl p-3 shadow-2xl transition-colors duration-300">
+        <div class="flex items-center justify-between mb-2 px-0.5">
+            <span class="font-fantasy text-xs font-bold text-amber-300 tracking-wide flex items-center gap-1.5">
+                <i data-lucide="map" class="w-3.5 h-3.5 text-amber-400"></i>
+                Carta de la Isla
+            </span>
+            <span id="minimapCoords" class="font-mono text-[10px] text-amber-200/80 bg-amber-500/10 border border-amber-500/20 px-1.5 py-0.5 rounded">
+                0, 0
+            </span>
+        </div>
+
+        <!-- Cuadrícula del Minimapa -->
+        <div class="bg-slate-900/50 rounded-xl border border-slate-800/80 p-2 flex items-center justify-center overflow-auto max-h-44 custom-scroll">
+            <div id="minimapGrid" class="grid gap-1">
+                <!-- Generado dinámicamente -->
+            </div>
+        </div>
+
+        <div class="mt-2 flex items-center justify-between text-[10px] text-slate-400 px-1">
+            <span class="flex items-center gap-1">
+                <span class="w-2 h-2 rounded-full bg-amber-400 inline-block"></span> Estás aquí
+            </span>
+            <button onclick="teleportToOrigin()" class="text-amber-300/90 hover:text-amber-200 underline transition">
+                Ir al inicio
+            </button>
+        </div>
+    </aside>
+
+    <!-- 4. NAVEGACIÓN DIRECCIONAL SUPERPUESTA (N / S / E / O) -->
+    <!-- NORTE -->
+    <div id="navNorthSlot" class="fixed top-4 left-1/2 -translate-x-1/2 z-20"></div>
+    <!-- SUR (Encima del panel inferior) -->
+    <div id="navSouthSlot" class="fixed bottom-[155px] sm:bottom-[142px] left-1/2 -translate-x-1/2 z-20"></div>
+    <!-- OESTE -->
+    <div id="navWestSlot" class="fixed left-4 top-1/2 -translate-y-1/2 z-20"></div>
+    <!-- ESTE -->
+    <div id="navEastSlot" class="fixed right-4 top-1/2 -translate-y-1/2 z-20"></div>
+
+    <!-- 5. BARRA INFERIOR ANCHA DE DESCRIPCIÓN Y PUNTOS DE INTERÉS -->
+    <section class="fixed bottom-3 left-3 right-3 sm:left-5 sm:right-5 z-30 bg-slate-950/85 backdrop-blur-xl border border-amber-500/30 rounded-2xl px-4 py-3.5 sm:px-6 sm:py-4 shadow-[0_-10px_40px_rgba(0,0,0,0.8)]">
+        <div class="max-w-7xl mx-auto flex flex-col lg:flex-row lg:items-center justify-between gap-3 sm:gap-5">
+
+            <!-- Título y Narrativa -->
+            <div class="flex-1 min-w-0">
+                <div class="flex flex-wrap items-center gap-2 mb-1">
+                    <span id="roomZoneBadge" class="text-[10px] uppercase tracking-widest font-bold px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                        Sede del Gremio
+                    </span>
+                    <span id="roomCoordBadge" class="text-xs font-mono text-slate-400">
+                        Sector (0, 0)
+                    </span>
+                </div>
+                <h2 id="roomTitle" class="font-fantasy text-lg sm:text-xl font-bold text-white truncate">
+                    Cargando ubicación...
+                </h2>
+                <p id="roomDescription" class="text-xs sm:text-sm text-slate-300 leading-relaxed mt-1 max-h-14 overflow-y-auto custom-scroll pr-2">
+                    Explorando los archivos cartográficos de la isla...
+                </p>
+            </div>
+
+            <!-- Puntos de Interés (NPCs / Objetos) -->
+            <div class="lg:w-[38%] shrink-0 border-t lg:border-t-0 lg:border-l border-slate-800 pt-2.5 lg:pt-0 lg:pl-5">
+                <div class="text-[10px] uppercase tracking-wider text-slate-400 font-semibold mb-2 flex items-center gap-1.5">
+                    <i data-lucide="sparkles" class="w-3.5 h-3.5 text-amber-400"></i>
+                    <span>Puntos de Interés en esta zona</span>
+                </div>
+                <div id="poiList" class="flex flex-wrap gap-1.5 max-h-16 overflow-y-auto custom-scroll">
+                    <!-- Botones de POIs generados dinámicamente -->
+                </div>
+            </div>
+
+        </div>
+    </section>
+
+    <!-- MODAL DE INSPECCIÓN DE PUNTO DE INTERÉS (SOLO LECTURA) -->
+    <div id="poiModal" class="hidden fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4" onclick="closePoiModal()">
+        <div class="bg-slateDark border border-amber-500/40 rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-4 transform transition-all" onclick="event.stopPropagation()">
+            <div class="flex items-start justify-between gap-3">
+                <div class="flex items-center gap-2.5">
+                    <div class="w-9 h-9 rounded-xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0">
+                        <i data-lucide="scroll-text" class="w-5 h-5"></i>
+                    </div>
+                    <div>
+                        <span class="text-[10px] uppercase tracking-widest text-amber-400 font-bold block">Detalle de Exploración</span>
+                        <h3 id="modalPoiTitle" class="font-fantasy text-xl font-bold text-white"></h3>
+                    </div>
+                </div>
+                <button onclick="closePoiModal()" class="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition">
+                    <i data-lucide="x" class="w-5 h-5"></i>
+                </button>
+            </div>
+
+            <div class="bg-slate-950/80 border border-slate-800/90 rounded-xl p-4">
+                <p id="modalPoiDescription" class="text-sm text-slate-200 leading-relaxed whitespace-pre-line"></p>
+            </div>
+
+            <div class="flex justify-end">
+                <button onclick="closePoiModal()" class="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold text-xs transition shadow-lg shadow-amber-500/20">
+                    Cerrar
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        /**
+         * ESTADO GLOBAL DEL VISOR ESTÁTICO
+         */
+        let normalizedRooms = {}; // Mapa indexado por "x,y"
+        let originKey = "0,0";
+        let currentKey = "0,0";
+
+        // Estado de transformación Pan & Zoom
+        let viewState = {
+            scale: 1,
+            translateX: 0,
+            translateY: 0,
+            isDragging: false,
+            startX: 0,
+            startY: 0
+        };
+
+        /**
+         * ILUSTRACIÓN DE RESPALDO SVG (Si se abre localmente sin servidor HTTP o falta imagen)
+         */
+        function buildFallbackSVG(title, subtitle) {
+            const svg = `
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720" width="1280" height="720">
+                <defs>
+                    <radialGradient id="bgGrad" cx="50%" cy="45%" r="65%">
+                        <stop offset="0%" stop-color="#1e293b"/>
+                        <stop offset="100%" stop-color="#090b10"/>
+                    </radialGradient>
+                </defs>
+                <rect width="1280" height="720" fill="url(#bgGrad)"/>
+                <circle cx="640" cy="340" r="210" fill="none" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="10 10" opacity="0.35"/>
+                <circle cx="640" cy="340" r="150" fill="none" stroke="#38bdf8" stroke-width="1" opacity="0.25"/>
+                <path d="M180 560 Q450 470 640 520 T1100 490 L1100 650 L180 650 Z" fill="#0f172a" opacity="0.8"/>
+                <text x="640" y="330" font-family="Georgia, serif" font-size="34" fill="#fbbf24" text-anchor="middle" letter-spacing="4">
+                    ${escapeXml(title.toUpperCase())}
+                </text>
+                <text x="640" y="375" font-family="sans-serif" font-size="16" fill="#94a3b8" text-anchor="middle">
+                    ${escapeXml(subtitle || 'Carta cartográfica de la Isla del Gremio')}
+                </text>
+            </svg>`;
+            return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+        }
+
+        /**
+         * DATOS DE RESPALDO INTEGRADOS
+         * Se usan automáticamente si el navegador bloquea fetch('./gremio.json') al abrirse con file://
+         */
+        const EMBEDDED_FALLBACK_DATA = {
+            "0,0": {
+                x: 0, y: 0,
+                title: "Sala Común del Gremio",
+                zoneType: "Sede Central • Corazón del Bastión",
+                description: "El gran salón de reunión de la compañía. La chimenea central ilumina los estandartes colgados de las vigas de roble y el tablero principal de contratos.",
+                imageUrl: buildFallbackSVG("Sala Común del Gremio", "Punto de encuentro principal (Modo vista previa local)"),
+                pois: [
+                    { name: "Tablero de Misiones", detail: "Contratos disponibles para los miembros activos del gremio." },
+                    { name: "Barnaby, el Tabernero", detail: "Siempre tiene una jarra lista y rumores recientes de la costa." }
+                ]
+            },
+            "0,1": {
+                x: 0, y: 1,
+                title: "Sendero del Acantilado Norte",
+                zoneType: "Exterior • Mirador",
+                description: "Camino empedrado que asciende hacia la cumbre de la isla con vistas despejadas al océano abierto.",
+                imageUrl: buildFallbackSVG("Sendero del Acantilado Norte", "Ruta hacia la Torre Arcana"),
+                pois: [
+                    { name: "Telescopio de Vigilancia", detail: "Permite avistar embarcaciones a varias leguas de distancia." }
+                ]
+            },
+            "0,-1": {
+                x: 0, y: -1,
+                title: "Muelles de la Bahía",
+                zoneType: "Costa Sur • Puerto",
+                description: "Embarcadero principal donde atraca el navío del gremio y se descargan los suministros de cada expedición.",
+                imageUrl: buildFallbackSVG("Muelles de la Bahía", "Acceso marítimo de la isla"),
+                pois: [
+                    { name: "Capitana Lyra", detail: "Coordina las rutas marítimas y el mantenimiento de los barcos." }
+                ]
+            },
+            "1,0": {
+                x: 1, y: 0,
+                title: "Patio de Armas y Forja",
+                zoneType: "Ala Este • Herrería",
+                description: "El calor de la fragua y el repiqueteo del martillo sobre el yunque llenan este patio de entrenamiento.",
+                imageUrl: buildFallbackSVG("Patio de Armas y Forja", "Taller de armas y armaduras"),
+                pois: [
+                    { name: "Maestra Herrera Kaelen", detail: "Forja y repara equipamiento para las expediciones." }
+                ]
+            },
+            "-1,0": {
+                x: -1, y: 0,
+                title: "Jardín Botánico y Enfermería",
+                zoneType: "Ala Oeste • Alquimia",
+                description: "Invernaderos repletos de flora medicinal y mesas de destilación alquímica.",
+                imageUrl: buildFallbackSVG("Jardín Botánico", "Invernadero y sala de sanación"),
+                pois: [
+                    { name: "Hermano Cedric", detail: "Prepara pociones curativas y atiende a los aventureros heridos." }
+                ]
+            }
+        };
+
+        /**
+         * INICIALIZACIÓN AL CARGAR LA PÁGINA
+         */
+        window.addEventListener('DOMContentLoaded', async () => {
+            lucide.createIcons();
+            setupPanAndZoom();
+            setupKeyboardControls();
+            await loadWorldJSON();
+        });
+
+        /**
+         * CARGA AUTOMÁTICA DESDE './gremio.json' MEDIANTE FETCH()
+         * Soporta tanto el JSON exportado directamente por el Constructor ("0,0": {...})
+         * como estructuras con array/objeto `rooms` y `connections`.
+         */
+        async function loadWorldJSON() {
+            const statusDot = document.getElementById('statusDot');
+            const statusText = document.getElementById('syncStatusText');
+
+            try {
+                // Evitamos caché agresiva del navegador al actualizar el archivo en GitHub Pages / Netlify
+                const response = await fetch(`./gremio.json?t=${Date.now()}`, { cache: 'no-store' });
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                const rawData = await response.json();
+                parseAndNormalizeWorld(rawData);
+
+                statusDot.className = "w-2 h-2 rounded-full bg-emerald-400";
+                statusText.textContent = "Sincronizado con ./gremio.json";
+            } catch (err) {
+                console.warn("No se pudo cargar ./gremio.json externamente, activando mapa de respaldo integrado:", err);
+                parseAndNormalizeWorld(EMBEDDED_FALLBACK_DATA);
+
+                statusDot.className = "w-2 h-2 rounded-full bg-amber-400";
+                statusText.textContent = "Vista local (sin ./gremio.json activo)";
+            }
+
+            renderCurrentLocation();
+        }
+
+        /**
+         * NORMALIZADOR DE ESTRUCTURA JSON
+         * Garantiza compatibilidad 100% con el exportador del Modo Constructor y con esquemas `rooms`.
+         */
+        function parseAndNormalizeWorld(raw) {
+            normalizedRooms = {};
+            const entries = Array.isArray(raw?.rooms)
+                ? raw.rooms
+                : Object.values(raw?.rooms || raw || {});
+
+            entries.forEach((item, index) => {
+                if (!item || typeof item !== 'object') return;
+                const x = Number.isFinite(Number(item.x)) ? Number(item.x) : index;
+                const y = Number.isFinite(Number(item.y)) ? Number(item.y) : 0;
+                const key = `${x},${y}`;
+
+                const title = item.title || item.name || `Sector (${x}, ${y})`;
+                const imageUrl = item.imageUrl || item.image || buildFallbackSVG(title, item.zoneType || '');
+
+                // Normalizar POIs (soporta {name, detail} o {name, description})
+                const rawPois = Array.isArray(item.pois) ? item.pois : [];
+                const pois = rawPois.map(p => ({
+                    name: p.name || p.title || 'Punto de interés',
+                    detail: p.detail || p.description || p.desc || 'Sin descripción adicional.'
+                }));
+
+                normalizedRooms[key] = {
+                    id: item.id || key,
+                    x,
+                    y,
+                    title,
+                    zoneType: item.zoneType || item.subtitle || 'Zona de la Isla',
+                    description: item.description || 'Sin descripción registrada para esta ubicación.',
+                    imageUrl,
+                    pois,
+                    connections: item.connections || null
+                };
+            });
+
+            // Establecer punto de inicio (preferiblemente 0,0)
+            if (normalizedRooms["0,0"]) {
+                originKey = "0,0";
+            } else {
+                const firstKey = Object.keys(normalizedRooms)[0];
+                originKey = firstKey || "0,0";
+            }
+            currentKey = originKey;
+        }
+
+        /**
+         * RENDERIZADO DE LA UBICACIÓN ACTUAL
+         */
+        function renderCurrentLocation() {
+            const room = normalizedRooms[currentKey];
+            if (!room) return;
+
+            // Reiniciar centrado/zoom suave al entrar a una nueva sala
+            resetViewTransform();
+
+            const imgEl = document.getElementById('roomImage');
+            imgEl.classList.remove('room-fade-in');
+            void imgEl.offsetWidth;
+            imgEl.classList.add('room-fade-in');
+            imgEl.src = room.imageUrl;
+
+            // Actualizar textos de la barra inferior
+            document.getElementById('roomZoneBadge').textContent = room.zoneType;
+            document.getElementById('roomCoordBadge').textContent = `Coordenadas (${room.x}, ${room.y})`;
+            document.getElementById('roomTitle').textContent = room.title;
+            document.getElementById('roomDescription').textContent = room.description;
+            document.getElementById('minimapCoords').textContent = `${room.x}, ${room.y}`;
+
+            renderDirectionalControls(room);
+            renderPOIs(room);
+            renderMinimap();
+            lucide.createIcons();
+        }
+
+        function handleImageError() {
+            const room = normalizedRooms[currentKey];
+            if (room) {
+                document.getElementById('roomImage').src = buildFallbackSVG(room.title, room.zoneType);
+            }
+        }
+
+        /**
+         * CONTROLES DE NAVEGACIÓN DIRECCIONAL (N, S, E, O)
+         */
+        function getAdjacentRoom(room, dir) {
+            // 1. Si el JSON define conexiones explícitas por ID/coordenada
+            if (room.connections && room.connections[dir]) {
+                const targetRef = room.connections[dir];
+                if (normalizedRooms[targetRef]) return normalizedRooms[targetRef];
+                const byId = Object.values(normalizedRooms).find(r => r.id === targetRef);
+                if (byId) return byId;
+            }
+            // 2. Navegación espacial por coordenadas cartesianas (x, y)
+            const deltas = {
+                N: { dx: 0, dy: 1 },
+                S: { dx: 0, dy: -1 },
+                E: { dx: 1, dy: 0 },
+                O: { dx: -1, dy: 0 }
+            };
+            const d = deltas[dir];
+            return normalizedRooms[`${room.x + d.dx},${room.y + d.dy}`] || null;
+        }
+
+        function renderDirectionalControls(room) {
+            const dirs = [
+                { code: 'N', slotId: 'navNorthSlot', label: 'Norte', icon: 'chevron-up' },
+                { code: 'S', slotId: 'navSouthSlot', label: 'Sur', icon: 'chevron-down' },
+                { code: 'E', slotId: 'navEastSlot', label: 'Este', icon: 'chevron-right' },
+                { code: 'O', slotId: 'navWestSlot', label: 'Oeste', icon: 'chevron-left' }
+            ];
+
+            dirs.forEach(d => {
+                const slot = document.getElementById(d.slotId);
+                const neighbor = getAdjacentRoom(room, d.code);
+
+                if (!neighbor) {
+                    slot.innerHTML = '';
+                    return;
+                }
+
+                const targetKey = `${neighbor.x},${neighbor.y}`;
+                slot.innerHTML = `
+                    <button onclick="navigateToKey('${targetKey}')"
+                        class="compass-nav-btn flex items-center gap-2 px-3.5 py-2 rounded-full bg-slate-950/80 hover:bg-amber-500 text-amber-300 hover:text-slate-950 border border-amber-400/50 backdrop-blur-md shadow-2xl cursor-pointer group">
+                        <i data-lucide="${d.icon}" class="w-4 h-4 shrink-0 stroke-[2.5]"></i>
+                        <div class="text-left leading-tight">
+                            <span class="block text-[9px] uppercase tracking-widest font-extrabold opacity-80">${d.label}</span>
+                            <span class="block text-xs font-semibold max-w-[105px] sm:max-w-[145px] truncate">${escapeHtml(neighbor.title)}</span>
+                        </div>
+                    </button>
+                `;
+            });
+        }
+
+        function navigateToKey(key) {
+            if (normalizedRooms[key]) {
+                currentKey = key;
+                renderCurrentLocation();
+            }
+        }
+
+        function teleportToOrigin() {
+            navigateToKey(originKey);
+        }
+
+        /**
+         * RENDERIZADO DE PUNTOS DE INTERÉS
+         */
+        function renderPOIs(room) {
+            const container = document.getElementById('poiList');
+            if (!room.pois || room.pois.length === 0) {
+                container.innerHTML = `<span class="text-xs text-slate-500 italic">No hay puntos destacados en esta zona.</span>`;
+                return;
+            }
+
+            container.innerHTML = room.pois.map((poi, idx) => `
+                <button onclick="openPoiModal(${idx})"
+                    class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-900/90 hover:bg-amber-500/20 border border-amber-500/30 hover:border-amber-400 text-xs text-amber-200 hover:text-amber-100 font-medium transition cursor-pointer">
+                    <span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
+                    <span>${escapeHtml(poi.name)}</span>
+                </button>
+            `).join('');
+        }
+
+        function openPoiModal(index) {
+            const room = normalizedRooms[currentKey];
+            const poi = room?.pois?.[index];
+            if (!poi) return;
+
+            document.getElementById('modalPoiTitle').textContent = poi.name;
+            document.getElementById('modalPoiDescription').textContent = poi.detail;
+            document.getElementById('poiModal').classList.remove('hidden');
+        }
+
+        function closePoiModal() {
+            document.getElementById('poiModal').classList.add('hidden');
+        }
+
+        /**
+         * MINIMAPA FLOTANTE SEMITRANSPARENTE
+         */
+        function renderMinimap() {
+            const grid = document.getElementById('minimapGrid');
+            const allRooms = Object.values(normalizedRooms);
+            if (allRooms.length === 0) return;
+
+            let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+            allRooms.forEach(r => {
+                if (r.x < minX) minX = r.x;
+                if (r.x > maxX) maxX = r.x;
+                if (r.y < minY) minY = r.y;
+                if (r.y > maxY) maxY = r.y;
+            });
+
+            const cols = (maxX - minX) + 1;
+            grid.style.gridTemplateColumns = `repeat(${cols}, minmax(26px, 1fr))`;
+
+            let html = '';
+            for (let y = maxY; y >= minY; y--) {
+                for (let x = minX; x <= maxX; x++) {
+                    const key = `${x},${y}`;
+                    const r = normalizedRooms[key];
+                    const isCurrent = key === currentKey;
+
+                    if (r) {
+                        html += `
+                            <button onclick="navigateToKey('${key}')"
+                                title="${escapeHtml(r.title)} (${x}, ${y})"
+                                class="h-7 px-1 rounded-md text-[9px] font-bold flex items-center justify-center transition cursor-pointer border
+                                ${isCurrent
+                                    ? 'bg-amber-400 text-slate-950 border-white shadow-[0_0_12px_rgba(251,191,36,0.75)] scale-110 z-10'
+                                    : 'bg-slate-800/75 hover:bg-slate-700/90 text-slate-300 border-slate-600/60'}">
+                                ${isCurrent ? '★' : '•'}
+                            </button>
+                        `;
+                    } else {
+                        html += `<div class="h-7 rounded-md bg-transparent"></div>`;
+                    }
+                }
+            }
+            grid.innerHTML = html;
+        }
+
+        /**
+         * SISTEMA INTERACTIVO PAN & ZOOM (ARRASTRE CON RATÓN, RUEDA SCROLL Y TÁCTIL)
+         */
+        function setupPanAndZoom() {
+            const viewport = document.getElementById('mapViewport');
+
+            // Zoom con rueda del ratón
+            viewport.addEventListener('wheel', (e) => {
+                e.preventDefault();
+                const zoomStep = e.deltaY < 0 ? 0.16 : -0.16;
+                adjustZoom(zoomStep);
+            }, { passive: false });
+
+            // Inicio de arrastre (Mouse)
+            viewport.addEventListener('mousedown', (e) => {
+                if (e.button !== 0) return;
+                viewState.isDragging = true;
+                viewState.startX = e.clientX - viewState.translateX;
+                viewState.startY = e.clientY - viewState.translateY;
+            });
+
+            window.addEventListener('mousemove', (e) => {
+                if (!viewState.isDragging) return;
+                viewState.translateX = e.clientX - viewState.startX;
+                viewState.translateY = e.clientY - viewState.startY;
+                applyTransform();
+            });
+
+            window.addEventListener('mouseup', () => {
+                viewState.isDragging = false;
+            });
+
+            // Doble clic para centrar y restablecer zoom
+            viewport.addEventListener('dblclick', () => {
+                resetViewTransform();
+            });
+
+            // Soporte táctil básico para arrastrar en móviles/tablets
+            viewport.addEventListener('touchstart', (e) => {
+                if (e.touches.length === 1) {
+                    viewState.isDragging = true;
+                    viewState.startX = e.touches[0].clientX - viewState.translateX;
+                    viewState.startY = e.touches[0].clientY - viewState.translateY;
+                }
+            }, { passive: true });
+
+            viewport.addEventListener('touchmove', (e) => {
+                if (!viewState.isDragging || e.touches.length !== 1) return;
+                viewState.translateX = e.touches[0].clientX - viewState.startX;
+                viewState.translateY = e.touches[0].clientY - viewState.startY;
+                applyTransform();
+            }, { passive: true });
+
+            viewport.addEventListener('touchend', () => {
+                viewState.isDragging = false;
+            });
+        }
+
+        function adjustZoom(delta) {
+            const nextScale = Math.min(4, Math.max(0.5, Number((viewState.scale + delta).toFixed(2))));
+            viewState.scale = nextScale;
+            applyTransform();
+        }
+
+        function resetViewTransform() {
+            viewState.scale = 1;
+            viewState.translateX = 0;
+            viewState.translateY = 0;
+            applyTransform();
+        }
+
+        function applyTransform() {
+            const layer = document.getElementById('mapTransformLayer');
+            layer.style.transform = `translate(${viewState.translateX}px, ${viewState.translateY}px) scale(${viewState.scale})`;
+            document.getElementById('zoomLevelLabel').textContent = `${Math.round(viewState.scale * 100)}%`;
+        }
+
+        /**
+         * NAVEGACIÓN CON TECLADO (Flechas / WASD / Escape)
+         */
+        function setupKeyboardControls() {
+            window.addEventListener('keydown', (e) => {
+                if (e.key === 'Escape') {
+                    closePoiModal();
+                    return;
+                }
+                const room = normalizedRooms[currentKey];
+                if (!room) return;
+
+                let dir = null;
+                if (e.key === 'ArrowUp' || e.key.toLowerCase() === 'w') dir = 'N';
+                else if (e.key === 'ArrowDown' || e.key.toLowerCase() === 's') dir = 'S';
+                else if (e.key === 'ArrowRight' || e.key.toLowerCase() === 'd') dir = 'E';
+                else if (e.key === 'ArrowLeft' || e.key.toLowerCase() === 'a') dir = 'O';
+
+                if (dir) {
+                    const neighbor = getAdjacentRoom(room, dir);
+                    if (neighbor) {
+                        e.preventDefault();
+                        navigateToKey(`${neighbor.x},${neighbor.y}`);
+                    }
+                }
+            });
+        }
+
+        function escapeHtml(str) {
+            const div = document.createElement('div');
+            div.textContent = str;
+            return div.innerHTML;
+        }
+
+        function escapeXml(str) {
+            return String(str)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&apos;');
+        }
+    </script>
+</body>
+</html>
